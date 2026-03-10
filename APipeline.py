@@ -5,6 +5,20 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from category_encoders import TargetEncoder
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import make_scorer, root_mean_squared_error
+# 1. For the Linear Family
+from sklearn.linear_model import Ridge
+
+# 2. For the Distance Family
+from sklearn.neighbors import KNeighborsRegressor
+
+# 3. For the Tree Ensemble Family
+from sklearn.ensemble import RandomForestRegressor
+
+# 4. For evaluating the pipeline
+from sklearn.model_selection import cross_val_score
+
+
 
 # 1. Load your dataset (Make sure this is the file with the single 'Brand' column!)
 print("Loading data...")
@@ -39,10 +53,29 @@ pipeline = Pipeline(steps=[
     ('estimator', RandomForestRegressor(random_state=42, n_jobs=-1))
 ])
 
-# 7. Fit the Pipeline on the Training Data
-print("Fitting pipeline to training data (this handles encoding, scaling, and training!)...")
-pipeline.fit(X_train, y_train)
 
-# 8. Evaluate on the Test Set
-score = pipeline.score(X_test, y_test)
-print(f"Pipeline successfully executed! Default Random Forest R^2 Score: {score:.4f}")
+# ==========================================
+# PART B: MODEL SELECTION (Execution)
+# ==========================================
+
+models = {
+    "Linear Family (Ridge)": Ridge(),
+    "Distance Family (KNN)": KNeighborsRegressor(),
+    "Tree Ensemble (Random Forest)": RandomForestRegressor(random_state=42, n_jobs=-1)
+}
+
+rmse_scorer = make_scorer(root_mean_squared_error)
+
+for name, model in models.items():
+    full_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('estimator', model)
+    ])
+    
+    r2 = cross_val_score(full_pipeline, X_train, y_train, cv=5, scoring='r2')
+    rmse = cross_val_score(full_pipeline, X_train, y_train, cv=5, scoring=rmse_scorer)
+    
+    print(f"{name}")
+    print(f"  R²  : {r2.mean():.4f} ± {r2.std():.4f}")
+    print(f"  RMSE: {rmse.mean():.2f} ± {rmse.std():.2f}")
+    print()
