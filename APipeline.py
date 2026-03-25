@@ -24,6 +24,11 @@ from sklearn.model_selection import cross_val_score
 print("Loading data...")
 df = pd.read_csv('SG_usedcar_Reversed.csv')
 
+# Engineer AGE from Manufacturing date
+from datetime import datetime
+current_year = datetime.now().year
+df['Age'] = current_year - df['Manufactured']
+
 # 2. Separate features (X) and target (y)
 X = df.drop(columns=['Price'])
 y = df['Price']
@@ -34,7 +39,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_
 # 4. Define your feature branches
 brand_col = ['Brand']
 num_cols = ['Coe_left', 'Mileage', 'Road Tax', 'COE', 'Engine Cap', 
-            'Curb Weight', 'Manufactured', 'OMV', 'Power', 'No. of Owners']
+            'Curb Weight', 'Age', 'OMV', 'Power', 'No. of Owners']
 # Type_* and Transmission_* are left out because 'remainder=passthrough' handles them automatically
 
 # 5. Build the Preprocessing Architecture
@@ -44,8 +49,7 @@ preprocessor = ColumnTransformer(
         ('brand_encoder', TargetEncoder(smoothing=5), brand_col),
         ('num_scaler', StandardScaler(), num_cols)
     ],
-    remainder='passthrough' # Passes your 0/1 binary columns through untouched
-)
+    remainder='passthrough' 
 
 # 6. Assemble the Final Pipeline
 pipeline = Pipeline(steps=[
