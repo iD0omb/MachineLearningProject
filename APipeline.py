@@ -284,46 +284,53 @@ def main():
     print("If deployment speed is a priority, consider removing 'REDUNDANT' models.")
 
 
-    # ==========================================
+   # ==========================================
     # PART E: FINAL TEST SET EVALUATION (THE VERDICT)
     # ==========================================
     print("\n" + "="*60)
-    print("  FINAL PERFORMANCE ON UNSEEN TEST DATA  ")
+    print("  FINAL PERFORMANCE EVALUATION (5-FOLD CV ON OPTIMIZED STACK)  ")
     print("="*60)
 
-    # Based on Ablation, we use the optimized Stack (RF + LGBM)
-    final_model_pipe = Pipeline(steps=[
+    # Define the final optimized Stack (RF + LGBM) determined by Ablation
+    final_stack_model = StackingRegressor(
+        estimators=[
+            ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
+            ('lgbm', LGBMRegressor(random_state=42, verbose=-1))
+        ],
+        final_estimator=Ridge(),
+        cv=5
+    )
+
+    final_pipe = Pipeline(steps=[
         ('preprocessor', preprocessor),
-        ('estimator', StackingRegressor(
-            estimators=[
-                ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
-                ('lgbm', LGBMRegressor(random_state=42, verbose=-1))
-            ],
-            final_estimator=Ridge(),
-            cv=5
-        ))
+        ('estimator', final_stack_model)
     ])
 
-    print("Fitting final optimized model...")
-    final_model_pipe.fit(X_train, y_train_log)
+    print("Calculating Final Metrics with Standard Deviation...")
 
-    # 1. Make predictions
-    y_pred_log = final_model_pipe.predict(X_test)
+    # 1. Calculate R² with Std Dev (Log-Scale)
+    final_r2_cv = cross_val_score(final_pipe, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
+    
+    # 2. Calculate RMSE in Dollars with Std Dev (using your custom function)
+    final_rmse_dollars_cv = cv_rmse_dollars(final_pipe, X_train, y_train_log, cv=5)
 
-    # 2. Convert back to original SGD currency
-    y_pred_final = np.expm1(y_pred_log)
+    print(f"\n[Final Cross-Validation Results]")
+    print(f"{'-'*45}")
+    print(f"Final R² Score:      {final_r2_cv.mean():.4f} ± {final_r2_cv.std():.4f}")
+    print(f"Final RMSE (Actual): ${final_rmse_dollars_cv.mean():,.2f} ± ${final_rmse_dollars_cv.std():,.2f}")
+    print(f"{'-'*45}")
 
-    # 3. Calculate Final Metrics
-    final_r2 = r2_score(y_test_orig, y_pred_final)
-    final_rmse = root_mean_squared_error(y_test_orig, y_pred_final)
-    final_mae = mean_absolute_error(y_test_orig, y_pred_final)
+    # 3. Final "One-Shot" fit for the CSV Export analysis
+    print("\nFitting model on full training set for CSV export analysis...")
+    final_pipe.fit(X_train, y_train_log)
+    y_pred_log_test = final_pipe.predict(X_test)
+    y_pred_dollars_test = np.expm1(y_pred_log_test)
 
-    print(f"\n[Final Results Summary]")
-    print(f"{'-'*30}")
-    print(f"Final R² Score:      {final_r2:.4f}")
-    print(f"Final RMSE (Actual): ${final_rmse:,.2f}")
-    print(f"Final MAE (Actual):  ${final_mae:,.2f}")
-    print(f"{'-'*30}")
+    # Calculate MAE for the Insight line
+    final_mae_test = mean_absolute_error(y_test_orig, y_pred_dollars_test)
+
+    print(f"Final MAE (Actual Test Set): ${final_mae_test:,.2f}")
+    print(f"Insight: The model is consistently accurate within ${final_mae_test:,.2f} of the actual price.")
 
     # ==========================================
     # NEW: EXPORT PREDICTIONS TO CSV
@@ -335,7 +342,7 @@ def main():
     
     # Add actuals and predictions
     results_df['Actual_Price'] = y_test_orig.values
-    results_df['Predicted_Price'] = np.round(y_pred_final, 2)
+    results_df['Predicted_Price'] = np.round(y_pred_dollars_test, 2)
     
     # Calculate error for each row
     results_df['Absolute_Error'] = np.abs(results_df['Actual_Price'] - results_df['Predicted_Price'])
