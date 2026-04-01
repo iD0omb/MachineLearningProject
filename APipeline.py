@@ -1,8 +1,9 @@
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 # Scikit-Learn tools
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -11,10 +12,10 @@ from sklearn.metrics import make_scorer, root_mean_squared_error
 # Encoders
 from category_encoders import TargetEncoder
 
-# Models (The 3 Families + Champion Candidate)
+# Models
 from sklearn.linear_model import Ridge
 from sklearn.neighbors import KNeighborsRegressor
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from lightgbm import LGBMRegressor
 
 def main():
@@ -26,19 +27,37 @@ def main():
     current_year = datetime.now().year
     df['Age'] = current_year - df['Manufactured']
 
+    # ==========================================
+    # SLIDE 22: TUNING / IMPROVEMENTS
+    # ==========================================
+
+    # --- Improvement 1: Feature Engineering ---
+    df['OMV_per_cc']        = df['OMV'] / df['Engine Cap']
+    df['Power_per_kg']      = df['Power'] / df['Curb Weight']
+    df['Mileage_per_year']  = df['Mileage'] / df['Age'].replace(0, 1)
+    df['COE_remaining_pct'] = df['Coe_left'] / 3650  # % of 10yr COE left
+
     # 3. Separate features (X) and target (y)
-    # We drop 'Price' (Target) and 'Manufactured' (since we engineered 'Age' from it)
     X = df.drop(columns=['Price', 'Manufactured'])
     y = df['Price']
 
-    # 4. Train/Test Split (Strictly before the pipeline to prevent data leakage)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    # --- Improvement 2: Log-transform the target (car prices are right-skewed) ---
+    y_log = np.log1p(y)
 
-    # 5. Define your feature branches
+    # 4. Train/Test Split
+    X_train, X_test, y_train_log, y_test_log = train_test_split(
+        X, y_log, test_size=0.3, random_state=42
+    )
+    # Keep original scale y_test for final RMSE reporting in dollars
+    _, _, y_train_orig, y_test_orig = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # 5. Define your feature branches (now includes engineered features)
     brand_col = ['Brand']
-    num_cols = ['Coe_left', 'Mileage', 'Road Tax', 'COE', 'Engine Cap', 
-                'Curb Weight', 'Age', 'OMV', 'Power', 'No. of Owners']
-    # Note: Type_* and Transmission_* are handled automatically by 'remainder=passthrough'
+    num_cols = ['Coe_left', 'Mileage', 'Road Tax', 'COE', 'Engine Cap',
+                'Curb Weight', 'Age', 'OMV', 'Power', 'No. of Owners',
+                'OMV_per_cc', 'Power_per_kg', 'Mileage_per_year', 'COE_remaining_pct']
 
     # 6. Build the Preprocessing Architecture
     print("Building pipeline architecture...\n")
@@ -47,11 +66,11 @@ def main():
             ('brand_encoder', TargetEncoder(smoothing=5), brand_col),
             ('num_scaler', StandardScaler(), num_cols)
         ],
-        remainder='passthrough' 
+        remainder='passthrough'
     )
 
     # ==========================================
-    # PART B: MODEL SELECTION (Execution)
+    # PART B: MODEL SELECTION (Baseline)
     # ==========================================
 
     models = {
@@ -61,31 +80,88 @@ def main():
         "Tree Ensemble (LightGBM)": LGBMRegressor(random_state=42, verbose=-1)
     }
 
-    # Define the custom scorer for scikit-learn
     rmse_scorer = make_scorer(root_mean_squared_error)
 
-    print("Starting Model Evaluation (5-Fold Cross Validation)...")
-    print("This may take a minute depending on your CPU.\n")
+    print("Starting Baseline Model Evaluation (5-Fold Cross Validation)...")
     print("=" * 45)
 
-    # 7. Evaluate each model through the pipeline
     for name, model in models.items():
-        # Assemble the full pipeline for the current model
         full_pipeline = Pipeline(steps=[
             ('preprocessor', preprocessor),
             ('estimator', model)
         ])
-        
-        # Calculate scores using 5-fold cross-validation
-        # n_jobs=-1 tells scikit-learn to use all available CPU cores for speed
-        r2 = cross_val_score(full_pipeline, X_train, y_train, cv=5, scoring='r2', n_jobs=-1)
-        rmse = cross_val_score(full_pipeline, X_train, y_train, cv=5, scoring=rmse_scorer, n_jobs=-1)
-        
-        # Print results
+
+        r2   = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
+        rmse = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+
         print(f"{name}")
         print(f"  R²  : {r2.mean():.4f} ± {r2.std():.4f}")
-        print(f"  RMSE: ${rmse.mean():,.2f} ± ${rmse.std():,.2f}")
+        print(f"  RMSE (log-scale): {rmse.mean():.4f} ± {rmse.std():.4f}")
         print("-" * 45)
+
+    # ==========================================
+    # SLIDE 22: TUNING / IMPROVEMENTS (Cont.)
+    # ==========================================
+
+    # --- Improvement 3: Hyperparameter Tuning on LightGBM ---
+    print("\n[Slide 22] Tuning LightGBM with RandomizedSearchCV...")
+    print("=" * 45)
+
+    param_grid = {
+        'estimator__n_estimators':     [300, 500, 1000],
+        'estimator__learning_rate':    [0.01, 0.05, 0.1],
+        'estimator__max_depth':        [4, 6, 8],
+        'estimator__num_leaves':       [31, 63, 127],
+        'estimator__subsample':        [0.7, 0.8, 1.0],
+        'estimator__colsample_bytree': [0.7, 0.8, 1.0],
+    }
+
+    lgbm_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('estimator', LGBMRegressor(random_state=42, verbose=-1))
+    ])
+
+    search = RandomizedSearchCV(
+        lgbm_pipeline, param_grid,
+        n_iter=30, cv=5, scoring='r2',
+        random_state=42, n_jobs=-1, verbose=1
+    )
+    search.fit(X_train, y_train_log)
+
+    print(f"\nBest R² (tuned LightGBM): {search.best_score_:.4f}")
+    print(f"Best Params: {search.best_params_}")
+
+    # --- Improvement 4: Stacking Ensemble ---
+    print("\n[Slide 22] Evaluating Stacking Ensemble...")
+    print("=" * 45)
+
+    stack_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('estimator', StackingRegressor(
+            estimators=[
+                ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
+                ('lgbm', LGBMRegressor(random_state=42, verbose=-1)),
+                ('knn',  KNeighborsRegressor())
+            ],
+            final_estimator=Ridge(),  # Meta-learner combines all 3
+            cv=5
+        ))
+    ])
+
+    r2_stack   = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
+    rmse_stack = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+
+    print("Stacking Ensemble")
+    print(f"  R²  : {r2_stack.mean():.4f} ± {r2_stack.std():.4f}")
+    print(f"  RMSE (log-scale): {rmse_stack.mean():.4f} ± {rmse_stack.std():.4f}")
+    print("-" * 45)
+
+    # --- Summary ---
+    print("\n[Slide 22] Improvement Summary")
+    print("=" * 45)
+    print(f"  Baseline LightGBM R²  : (see above)")
+    print(f"  Tuned LightGBM R²     : {search.best_score_:.4f}")
+    print(f"  Stacking Ensemble R²  : {r2_stack.mean():.4f}")
 
 if __name__ == "__main__":
     main()
