@@ -208,5 +208,80 @@ def main():
     print(f"  RMSE: ${final_rmse:,.2f}")
     print("-" * 45)
 
+   # ==========================================
+    # PART D: COMPREHENSIVE ABLATION STUDY
+    # ==========================================
+    print("\n[Ablation Study] Identifying the impact of each base model...")
+    print("=" * 60)
+
+    # Define all possible base estimators
+    base_models = [
+        ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
+        ('lgbm', LGBMRegressor(random_state=42, verbose=-1)),
+        ('knn',  KNeighborsRegressor())
+    ]
+
+    # Dictionary to store results for comparison
+    ablation_results = {}
+
+    # 1. Evaluate the FULL Stack (Baseline for comparison)
+    full_stack = StackingRegressor(estimators=base_models, final_estimator=Ridge(), cv=5)
+    full_pipe = Pipeline([('pre', preprocessor), ('est', full_stack)])
+    
+    r2_full = cross_val_score(full_pipe, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1).mean()
+    ablation_results['Full Stack (RF+LGBM+KNN)'] = r2_full
+    print(f"Full Stack Baseline R²: {r2_full:.4f}")
+
+    # 2. Iteratively remove ONE model and re-test
+    for i in range(len(base_models)):
+        # Create a sub-list that excludes the current model (i)
+        ablated_estimators = [m for j, m in enumerate(base_models) if i != j]
+        removed_model_name = base_models[i][0].upper()
+        
+        # Build the ablated stack
+        temp_stack = StackingRegressor(estimators=ablated_estimators, final_estimator=Ridge(), cv=5)
+        temp_pipe = Pipeline([('pre', preprocessor), ('est', temp_stack)])
+        
+        # Cross-validate
+        r2_temp = cross_val_score(temp_pipe, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1).mean()
+        
+        label = f"Ablated (No {removed_model_name})"
+        ablation_results[label] = r2_temp
+        print(f"Testing {label:<20} -> R²: {r2_temp:.4f}")
+
+    # ==========================================
+    # FINAL ABLATION SUMMARY & ANALYSIS
+    # ==========================================
+    print("\n[Ablation Summary Table]")
+    print("-" * 65)
+    print(f"{'Configuration':<30} | {'R² Score':<10} | {'Impact'}")
+    print("-" * 65)
+
+    for desc, score in ablation_results.items():
+        # Impact is the drop in performance when the model is REMOVED
+        # If score is lower than r2_full, the removed model was 'Necessary'
+        drop = r2_full - score
+        
+        if "Full" in desc:
+            status = "REFERENCE"
+        elif drop > 0.005:
+            status = "CRITICAL"
+        elif drop > 0.0005:
+            status = "HELPFUL"
+        else:
+            status = "REDUNDANT"
+            
+        print(f"{desc:<30} | {score:.4f}     | {status}")
+
+    # Determine the most essential model
+    # The lowest score in ablation_results (excluding full) belongs to the most vital model
+    scores_only = {k: v for k, v in ablation_results.items() if "Full" not in k}
+    mvp_config = min(scores_only, key=scores_only.get)
+    mvp_name = mvp_config.split(' ')[-1].replace(')', '')
+
+    print("-" * 65)
+    print(f"CONCLUSION: The {mvp_name} is the most vital model. Removing it caused the largest drop.")
+    print("If deployment speed is a priority, consider removing 'REDUNDANT' models.")
+
 if __name__ == "__main__":
     main()
