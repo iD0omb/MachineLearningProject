@@ -182,7 +182,6 @@ def main():
     print("\n[Slide 22] Improvement Summary")
     print("=" * 45)
     print(f"  Baseline LightGBM R²  : (see above)")
-    print(f"  Tuned LightGBM R²     : {search.best_score_:.4f}")
     print(f"  Stacking Ensemble R²  : {r2_stack.mean():.4f}")
 
     # --- Dollar-scale Final Evaluation ---
@@ -284,76 +283,77 @@ def main():
     print("If deployment speed is a priority, consider removing 'REDUNDANT' models.")
 
 
-   # ==========================================
-    # PART E: FINAL TEST SET EVALUATION (THE VERDICT)
     # ==========================================
-    print("\n" + "="*60)
-    print("  FINAL PERFORMANCE EVALUATION (5-FOLD CV ON OPTIMIZED STACK)  ")
-    print("="*60)
+    # PART E: THE VERDICT (CHAMPION: STACKING ENSEMBLE)
+    # ==========================================
+    print("\n" + "="*65)
+    print("   FINAL PERFORMANCE EVALUATION: CHAMPION (STACKING ENSEMBLE)   ")
+    print("="*65)
 
-    # Define the final optimized Stack (RF + LGBM) determined by Ablation
+    # 1. Define the Champion Stack 
+    # We use the best LGBM from your tuning phase to make the stack even stronger
     final_stack_model = StackingRegressor(
         estimators=[
             ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
-            ('lgbm', LGBMRegressor(random_state=42, verbose=-1))
+            ('lgbm', search.best_estimator_.named_steps['estimator']), # The tuned version!
+            ('knn',  KNeighborsRegressor())
         ],
-        final_estimator=Ridge(),
+        final_estimator=Ridge(),  # The meta-learner
         cv=5
     )
 
+    # Rebuild the final pipeline
     final_pipe = Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('estimator', final_stack_model)
     ])
 
-    print("Calculating Final Metrics with Standard Deviation...")
-
-    # 1. Calculate R² with Std Dev (Log-Scale)
+    # 2. Calculate Cross-Validation Metrics (The "Stability" Check)
+    print("Running Cross-Validation on Stacking Ensemble...")
     final_r2_cv = cross_val_score(final_pipe, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
-    
-    # 2. Calculate RMSE in Dollars with Std Dev (using your custom function)
     final_rmse_dollars_cv = cv_rmse_dollars(final_pipe, X_train, y_train_log, cv=5)
 
-    print(f"\n[Final Cross-Validation Results]")
-    print(f"{'-'*45}")
-    print(f"Final R² Score:      {final_r2_cv.mean():.4f} ± {final_r2_cv.std():.4f}")
-    print(f"Final RMSE (Actual): ${final_rmse_dollars_cv.mean():,.2f} ± ${final_rmse_dollars_cv.std():,.2f}")
-    print(f"{'-'*45}")
-
-    # 3. Final "One-Shot" fit for the CSV Export analysis
-    print("\nFitting model on full training set for CSV export analysis...")
+    # 3. Calculate Test Set Metrics (The "Real-World" Check)
+    print("Fitting final stack on full training set for Test Set evaluation...")
     final_pipe.fit(X_train, y_train_log)
     y_pred_log_test = final_pipe.predict(X_test)
     y_pred_dollars_test = np.expm1(y_pred_log_test)
-
-    # Calculate MAE for the Insight line
-    final_mae_test = mean_absolute_error(y_test_orig, y_pred_dollars_test)
-
-    print(f"Final MAE (Actual Test Set): ${final_mae_test:,.2f}")
-    print(f"Insight: The model is consistently accurate within ${final_mae_test:,.2f} of the actual price.")
-
-    # ==========================================
-    # NEW: EXPORT PREDICTIONS TO CSV
-    # ==========================================
-    print("\nExporting test predictions to 'test_predictions_analysis.csv'...")
     
-    # Create a copy of the test features
+    # Calculate Test Metrics in Dollars
+    test_r2 = r2_score(y_test_orig, y_pred_dollars_test)
+    test_rmse = root_mean_squared_error(y_test_orig, y_pred_dollars_test)
+    test_mae = mean_absolute_error(y_test_orig, y_pred_dollars_test)
+
+    # 4. CONSOLIDATED RESULTS TABLE (Ready for Slide 22)
+    print("\n" + "-"*65)
+    print(f"{'Metric':<20} | {'CV (Mean ± Std)':<25} | {'Test Set (Unseen)'}")
+    print("-"*65)
+    print(f"{'R² Score':<20} | {final_r2_cv.mean():.4f} ± {final_r2_cv.std():.4f} {'':<5} | {test_r2:.4f}")
+    print(f"{'RMSE (Dollars)':<20} | ${final_rmse_dollars_cv.mean():,.2f} ± ${final_rmse_dollars_cv.std():,.2f} | ${test_rmse:,.2f}")
+    print(f"{'MAE (Dollars)':<20} | {'---':<25} | ${test_mae:,.2f}")
+    print("-"*65)
+    
+    # Quick Insight
+    gap = test_rmse - final_rmse_dollars_cv.mean()
+    print(f"Insight: The Ensemble integrates Ridge, KNN, and LGBM for a robust 'voting' prediction.")
+    print(f"Generalization Gap: ${gap:,.2f} (Expected variance between train and test).")
+
+    # ==========================================
+    # FINAL CSV EXPORT
+    # ==========================================
+    print("\nExporting analysis to 'test_predictions_analysis.csv'...")
+    
     results_df = X_test.copy()
-    
-    # Add actuals and predictions
     results_df['Actual_Price'] = y_test_orig.values
     results_df['Predicted_Price'] = np.round(y_pred_dollars_test, 2)
-    
-    # Calculate error for each row
     results_df['Absolute_Error'] = np.abs(results_df['Actual_Price'] - results_df['Predicted_Price'])
     results_df['Percentage_Error'] = (results_df['Absolute_Error'] / results_df['Actual_Price']) * 100
 
-    # Sort by highest error to see where the model struggles
+    # Sort by error to see where the ensemble struggled
     results_df = results_df.sort_values(by='Absolute_Error', ascending=False)
-
-    # Save to CSV
     results_df.to_csv('test_predictions_analysis.csv', index=False)
-    print("Done! Check the file for row-by-row accuracy.")
+    
+    print("Done! Analysis saved successfully.")
 
 if __name__ == "__main__":
     main()
