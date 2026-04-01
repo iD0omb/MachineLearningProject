@@ -17,6 +17,9 @@ from sklearn.linear_model import Ridge
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from lightgbm import LGBMRegressor
+import warnings
+
+warnings.filterwarnings('ignore')
 
 def main():
     # 1. Load your dataset
