@@ -166,5 +166,28 @@ def main():
     print(f"  Tuned LightGBM R²     : {search.best_score_:.4f}")
     print(f"  Stacking Ensemble R²  : {r2_stack.mean():.4f}")
 
+    # --- Dollar-scale Final Evaluation ---
+    print("\n[Slide 22] Final Evaluation in Dollars")
+    print("=" * 45)
+
+    # Fit the tuned LightGBM on full training set
+    best_pipeline = search.best_estimator_
+    best_pipeline.fit(X_train, y_train_log)
+
+    # Predict and inverse-transform back to dollars
+    y_pred_log = best_pipeline.predict(X_test)
+    y_pred_dollars = np.expm1(y_pred_log)   # reverses log1p
+    y_test_dollars = np.expm1(y_test_log)   # reverses log1p on actual values
+
+    # Calculate final metrics in dollars
+    from sklearn.metrics import r2_score
+    final_r2   = r2_score(y_test_dollars, y_pred_dollars)
+    final_rmse = root_mean_squared_error(y_test_dollars, y_pred_dollars)
+
+    print(f"  Tuned LightGBM (Test Set)")
+    print(f"  R²  : {final_r2:.4f}")
+    print(f"  RMSE: ${final_rmse:,.2f}")
+    print("-" * 45)
+
 if __name__ == "__main__":
     main()
