@@ -8,7 +8,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import make_scorer, root_mean_squared_error
-
+from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error
 # Encoders
 from category_encoders import TargetEncoder
 
@@ -282,6 +282,71 @@ def main():
     print("-" * 65)
     print(f"CONCLUSION: The {mvp_name} is the most vital model. Removing it caused the largest drop.")
     print("If deployment speed is a priority, consider removing 'REDUNDANT' models.")
+
+
+    # ==========================================
+    # PART E: FINAL TEST SET EVALUATION (THE VERDICT)
+    # ==========================================
+    print("\n" + "="*60)
+    print("  FINAL PERFORMANCE ON UNSEEN TEST DATA  ")
+    print("="*60)
+
+    # Based on Ablation, we use the optimized Stack (RF + LGBM)
+    final_model_pipe = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('estimator', StackingRegressor(
+            estimators=[
+                ('rf',   RandomForestRegressor(random_state=42, n_jobs=-1)),
+                ('lgbm', LGBMRegressor(random_state=42, verbose=-1))
+            ],
+            final_estimator=Ridge(),
+            cv=5
+        ))
+    ])
+
+    print("Fitting final optimized model...")
+    final_model_pipe.fit(X_train, y_train_log)
+
+    # 1. Make predictions
+    y_pred_log = final_model_pipe.predict(X_test)
+
+    # 2. Convert back to original SGD currency
+    y_pred_final = np.expm1(y_pred_log)
+
+    # 3. Calculate Final Metrics
+    final_r2 = r2_score(y_test_orig, y_pred_final)
+    final_rmse = root_mean_squared_error(y_test_orig, y_pred_final)
+    final_mae = mean_absolute_error(y_test_orig, y_pred_final)
+
+    print(f"\n[Final Results Summary]")
+    print(f"{'-'*30}")
+    print(f"Final R² Score:      {final_r2:.4f}")
+    print(f"Final RMSE (Actual): ${final_rmse:,.2f}")
+    print(f"Final MAE (Actual):  ${final_mae:,.2f}")
+    print(f"{'-'*30}")
+
+    # ==========================================
+    # NEW: EXPORT PREDICTIONS TO CSV
+    # ==========================================
+    print("\nExporting test predictions to 'test_predictions_analysis.csv'...")
+    
+    # Create a copy of the test features
+    results_df = X_test.copy()
+    
+    # Add actuals and predictions
+    results_df['Actual_Price'] = y_test_orig.values
+    results_df['Predicted_Price'] = np.round(y_pred_final, 2)
+    
+    # Calculate error for each row
+    results_df['Absolute_Error'] = np.abs(results_df['Actual_Price'] - results_df['Predicted_Price'])
+    results_df['Percentage_Error'] = (results_df['Absolute_Error'] / results_df['Actual_Price']) * 100
+
+    # Sort by highest error to see where the model struggles
+    results_df = results_df.sort_values(by='Absolute_Error', ascending=False)
+
+    # Save to CSV
+    results_df.to_csv('test_predictions_analysis.csv', index=False)
+    print("Done! Check the file for row-by-row accuracy.")
 
 if __name__ == "__main__":
     main()
