@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime
 
 # Scikit-Learn tools
-from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV
+from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV, KFold
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -20,6 +20,21 @@ from lightgbm import LGBMRegressor
 import warnings
 
 warnings.filterwarnings('ignore')
+
+def cv_rmse_dollars(pipeline, X, y_log, cv=5):
+    """Compute RMSE in dollar scale across CV folds."""
+    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+    fold_rmses = []
+    for train_idx, val_idx in kf.split(X):
+        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_tr, y_val = y_log.iloc[train_idx], y_log.iloc[val_idx]
+
+        pipeline.fit(X_tr, y_tr)
+        y_pred_dollars = np.expm1(pipeline.predict(X_val))
+        y_val_dollars  = np.expm1(y_val)
+        fold_rmses.append(root_mean_squared_error(y_val_dollars, y_pred_dollars))
+
+    return np.array(fold_rmses)
 
 def main():
     # 1. Load your dataset
@@ -94,12 +109,14 @@ def main():
             ('estimator', model)
         ])
 
-        r2   = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
-        rmse = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+        r2           = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
+        rmse         = cross_val_score(full_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+        rmse_dollars = cv_rmse_dollars(full_pipeline, X_train, y_train_log)
 
         print(f"{name}")
         print(f"  R²  : {r2.mean():.4f} ± {r2.std():.4f}")
         print(f"  RMSE (log-scale): {rmse.mean():.4f} ± {rmse.std():.4f}")
+        print(f"  RMSE (dollars)  : ${rmse_dollars.mean():,.2f} ± ${rmse_dollars.std():,.2f}")
         print("-" * 45)
 
     # ==========================================
@@ -151,12 +168,14 @@ def main():
         ))
     ])
 
-    r2_stack   = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
-    rmse_stack = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+    r2_stack         = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring='r2', n_jobs=-1)
+    rmse_stack       = cross_val_score(stack_pipeline, X_train, y_train_log, cv=5, scoring=rmse_scorer, n_jobs=-1)
+    rmse_stack_dollars = cv_rmse_dollars(stack_pipeline, X_train, y_train_log)
 
     print("Stacking Ensemble")
     print(f"  R²  : {r2_stack.mean():.4f} ± {r2_stack.std():.4f}")
     print(f"  RMSE (log-scale): {rmse_stack.mean():.4f} ± {rmse_stack.std():.4f}")
+    print(f"  RMSE (dollars)  : ${rmse_stack_dollars.mean():,.2f} ± ${rmse_stack_dollars.std():,.2f}")
     print("-" * 45)
 
     # --- Summary ---
@@ -175,9 +194,9 @@ def main():
     best_pipeline.fit(X_train, y_train_log)
 
     # Predict and inverse-transform back to dollars
-    y_pred_log = best_pipeline.predict(X_test)
-    y_pred_dollars = np.expm1(y_pred_log)   # reverses log1p
-    y_test_dollars = np.expm1(y_test_log)   # reverses log1p on actual values
+    y_pred_log     = best_pipeline.predict(X_test)
+    y_pred_dollars = np.expm1(y_pred_log)
+    y_test_dollars = np.expm1(y_test_log)
 
     # Calculate final metrics in dollars
     from sklearn.metrics import r2_score
